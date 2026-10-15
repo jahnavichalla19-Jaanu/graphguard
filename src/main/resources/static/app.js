@@ -150,9 +150,16 @@ $('detail').addEventListener('click', guard(async ev => {
 
 $('btnSample').onclick = guard(async () => { await post('/api/ingest/sample'); await loadGraph(); await showPaths(); });
 $('btnGithub').onclick = guard(async () => {
-  const slug = prompt('Public GitHub repo to scan (owner/repo):');
-  if (!slug || !slug.includes('/')) return;
-  const [owner, repo] = slug.trim().split('/');
+  let slug = prompt('Public GitHub repo to scan (owner/repo or full GitHub URL):');
+  if (!slug) return;
+  slug = slug.trim().replace(/^https?:\/\/(www\.)?github\.com\//i, '').replace(/\.git$/i, '').replace(/\/$/, '');
+  const parts = slug.split('/');
+  if (parts.length < 2) {
+    alert('Please enter in format "owner/repo" or paste a GitHub repository URL.');
+    return;
+  }
+  const owner = parts[0];
+  const repo = parts[1];
   await post('/api/ingest/github', { owner, repo });
   await loadGraph();
   await showPaths();
