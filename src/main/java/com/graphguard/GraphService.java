@@ -1,0 +1,53 @@
+package com.graphguard;
+
+import com.falkordb.Driver;
+import com.falkordb.Graph;
+import com.falkordb.Record;
+import com.falkordb.ResultSet;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+@Service
+public class GraphService {
+    private final Driver driver;
+    private final String mainGraph;
+
+    public GraphService(Driver driver, @Value("${falkordb.graph}") String mainGraph) {
+        this.driver = driver;
+        this.mainGraph = mainGraph;
+    }
+
+    public String main() {
+        return mainGraph;
+    }
+
+    public List<Map<String, Object>> query(String graph, String cypher, Map<String, Object> params) {
+        Graph g = driver.graph(graph);
+        ResultSet rs = params.isEmpty() ? g.query(cypher) : g.query(cypher, params);
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Record r : rs) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            for (String key : r.keys()) {
+                row.put(key, r.getValue(key));
+            }
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    public void write(String graph, String cypher, Map<String, Object> params) {
+        query(graph, cypher, params);
+    }
+
+    public void deleteGraph(String graph) {
+        try {
+            driver.graph(graph).deleteGraph();
+        } catch (Exception ignored) {
+        }
+    }
+}

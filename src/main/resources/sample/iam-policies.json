@@ -1,0 +1,31 @@
+{
+  "roles": [
+    {
+      "name": "deploy-role",
+      "allow": [
+        {"actions": ["iam:PassRole"], "resources": ["admin-role"]},
+        {"actions": ["lambda:CreateFunction"], "resources": ["*"]},
+        {"actions": ["lambda:UpdateFunctionCode"], "resources": ["billing-lambda"]},
+        {"actions": ["s3:GetObject", "s3:PutObject"], "resources": ["build-artifacts"]}
+      ]
+    },
+    {
+      "name": "admin-role",
+      "admin": true,
+      "allow": [
+        {"actions": ["rds:*"], "resources": ["customer-db"]}
+      ]
+    },
+    {
+      "name": "readonly-role",
+      "allow": [
+        {"actions": ["s3:GetObject"], "resources": ["build-artifacts"]}
+      ]
+    }
+  ],
+  "resources": [
+    {"name": "customer-db", "type": "rds", "sensitive": true},
+    {"name": "build-artifacts", "type": "s3", "sensitive": false},
+    {"name": "billing-lambda", "type": "lambda", "sensitive": false, "executesAs": "admin-role"}
+  ]
+}

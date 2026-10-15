@@ -1,0 +1,14 @@
+spring:
+  application:
+    name: graphguard
+server:
+  port: 8080
+falkordb:
+  host: ${FALKORDB_HOST:localhost}
+  port: ${FALKORDB_PORT:6379}
+  graph: graphguard
+anthropic:
+  api-key: ${ANTHROPIC_API_KEY:}
+  model: ${ANTHROPIC_MODEL:claude-sonnet-5-5}
+github:
+  token: ${GITHUB_TOKEN:}

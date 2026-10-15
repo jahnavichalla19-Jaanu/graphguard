@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GraphGuard</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>GraphGuard</h1>
+  <span class="tag">CI/CD to cloud attack paths on FalkorDB</span>
+  <div class="toolbar">
+    <button id="btnSample">Load sample</button>
+    <button id="btnGithub">Scan GitHub repo</button>
+    <button id="btnPaths" class="primary">Find attack paths</button>
+    <button id="btnChoke">Fix-first ranking</button>
+    <button id="btnReset">Reset view</button>
+  </div>
+</header>
+<section id="stats"></section>
+<main>
+  <div id="cy"></div>
+  <aside>
+    <div id="log"></div>
+    <div class="ask">
+      <input id="q" placeholder="Can a stranger reach my customer database?">
+      <button id="btnAsk">Ask</button>
+    </div>
+  </aside>
+</main>
+<section id="sim"></section>
+<section id="detail"><p class="muted">Load the sample, then find attack paths. Click any node for its blast radius.</p></section>
+<script src="app.js"></script>
+</body>
+</html>
