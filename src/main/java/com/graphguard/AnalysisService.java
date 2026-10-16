@@ -83,13 +83,17 @@ public class AnalysisService {
         return out;
     }
 
-    public Map<String, Object> blastRadius(String graph, String query) {
-        List<Map<String, Object>> rows = graphs.query(graph, """
-                MATCH p = (s)-[*1..6]->(x)
-                WHERE (s.id = $q OR toLower(s.name) CONTAINS toLower($q))
-                  AND NOT 'Decision' IN labels(s) AND NOT 'Decision' IN labels(x)
-                RETURN DISTINCT x.id AS id, x.name AS name, labels(x)[0] AS label, x.sensitive AS sensitive
-                """, Map.of("q", query));
+    public Map<String, Object> blastRadius(String graph, String query, int depth) {
+        int cap = Math.min(Math.max(depth, 1), 6);
+        List<Map<String, Object>> rows = graphs.query(graph,
+                "MATCH p = (s)-[*1.." + cap + "]->(x) " +
+                "WHERE (s.id = $q OR toLower(s.name) CONTAINS toLower($q)) " +
+                "  AND NOT 'Decision' IN labels(s) AND NOT 'Decision' IN labels(x) " +
+                "RETURN DISTINCT x.id AS id, x.name AS name, labels(x)[0] AS label, " +
+                "       x.sensitive AS sensitive, " +
+                "       [n IN nodes(p) | n.name] AS via, " +
+                "       length(p) AS hops",
+                Map.of("q", query));
         Map<String, Integer> byLabel = new TreeMap<>();
         List<String> sensitive = new ArrayList<>();
         for (Map<String, Object> r : rows) {
@@ -100,12 +104,26 @@ public class AnalysisService {
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("query", query);
+        out.put("depth", cap);
         out.put("reachableCount", rows.size());
         out.put("byLabel", byLabel);
         out.put("sensitiveReached", sensitive);
         out.put("nodes", rows);
         return out;
     }
+
+    /**
+     * Returns the graph id of the first node matching the query string, or null if none exists.
+     * Used by the agent as a pre-flight check before tool execution (Gap 2).
+     */
+    public String resolveNode(String graph, String query) {
+        List<Map<String, Object>> rows = graphs.query(graph,
+                "MATCH (n) WHERE (n.id = $q OR toLower(n.name) CONTAINS toLower($q)) " +
+                "AND NOT 'Decision' IN labels(n) RETURN n.id AS id LIMIT 1",
+                Map.of("q", query));
+        return rows.isEmpty() ? null : String.valueOf(rows.get(0).get("id"));
+    }
+
 
     public Map<String, Object> chokePoints(String graph) {
         List<AttackPath> all = findPaths(graph);

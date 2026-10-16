@@ -65,8 +65,8 @@ public class ApiController {
     }
 
     @GetMapping("/blast-radius")
-    public Map<String, Object> blast(@RequestParam String node) {
-        return analysis.blastRadius(graphs.main(), node);
+    public Map<String, Object> blast(@RequestParam String node, @RequestParam(defaultValue = "4") int depth) {
+        return analysis.blastRadius(graphs.main(), node, depth);
     }
 
     @GetMapping("/choke-points")
