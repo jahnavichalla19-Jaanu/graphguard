@@ -27,7 +27,7 @@ import java.util.stream.Collectors;
 @Service
 public class AnalysisService {
     private static final Set<String> EDGE_TYPES = Set.of("HAS_WORKFLOW", "FIRES", "RUNS_JOB", "RUNS_IN", "CAN_READ", "ASSUMES",
-            "CAN_ASSUME", "CAN_PASS_ROLE", "CAN_UPDATE_CODE", "EXECUTES_AS", "CAN_ACCESS");
+            "CAN_ASSUME", "CAN_PASS_ROLE", "CAN_UPDATE_CODE", "EXECUTES_AS", "CAN_ACCESS", "CALLS_WORKFLOW");
     private static final String EDGE_TYPES_JOINED = String.join("|", EDGE_TYPES);
     private static final String PATH_QUERY = """
             MATCH p = (t:Trigger {untrusted: true})-[*1..8]->(r)
@@ -523,6 +523,7 @@ public class AnalysisService {
             case "EXECUTES_AS" -> "'" + a + "' runs with the permissions of role '" + b + "'";
             case "CAN_ACCESS" -> "Role '" + a + "' has access to '" + b + "'";
             case "RUNS_IN" -> "Action '" + a + "' executes inside job '" + b + "'";
+            case "CALLS_WORKFLOW" -> "Job '" + a + "' invokes reusable workflow '" + b + "'";
             default -> a + " -> " + b;
         };
     }
@@ -536,6 +537,7 @@ public class AnalysisService {
             case "EXECUTES_AS" -> "Give the function a dedicated least-privilege execution role instead of the privileged one.";
             case "CAN_ACCESS" -> "Replace broad actions with the exact actions needed and restrict the resource.";
             case "CAN_READ" -> "Pass the secret only to the step that needs it, and use environment protection so untrusted runs cannot read it.";
+            case "CALLS_WORKFLOW" -> "Review the called workflow to ensure it does not execute untrusted actions with elevated tokens.";
             default -> "Remove or restrict this relationship.";
         };
     }

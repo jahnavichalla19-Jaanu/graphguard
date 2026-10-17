@@ -12,3 +12,6 @@ anthropic:
   model: ${ANTHROPIC_MODEL:claude-sonnet-5-5}
 github:
   token: ${GITHUB_TOKEN:}
+graphguard:
+  aws:
+    live: ${GRAPHGUARD_AWS_LIVE:false}

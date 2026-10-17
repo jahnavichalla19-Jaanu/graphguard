@@ -4,6 +4,15 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 
+# Credentials and secrets
+.env
+*.env
+*.pem
+*.key
+.aws/
+credentials*
+
+
 ### STS ###
 .apt_generated
 .classpath

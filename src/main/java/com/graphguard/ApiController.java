@@ -17,8 +17,12 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -29,12 +33,15 @@ public class ApiController {
     private final Ingestor ingestor;
     private final AnalysisService analysis;
     private final AgentService agent;
+    private final boolean awsLive;
 
-    public ApiController(GraphService graphs, Ingestor ingestor, AnalysisService analysis, AgentService agent) {
+    public ApiController(GraphService graphs, Ingestor ingestor, AnalysisService analysis, AgentService agent,
+                         @Value("${graphguard.aws.live:false}") boolean awsLive) {
         this.graphs = graphs;
         this.ingestor = ingestor;
         this.analysis = analysis;
         this.agent = agent;
+        this.awsLive = awsLive;
     }
 
     @GetMapping("/health")
@@ -49,6 +56,33 @@ public class ApiController {
         return stats();
     }
 
+    @PostMapping(value = "/ingest/aws-iam", consumes = {"application/json", "text/plain", "*/*"})
+    public IngestStats awsIamJson(@RequestBody(required = false) String body) {
+        if (body == null || body.isBlank()) {
+            throw new IllegalArgumentException("IAM JSON payload cannot be empty");
+        }
+        ingestor.loadIam(body);
+        return stats();
+    }
+
+    @PostMapping(value = "/ingest/aws-iam", consumes = "multipart/form-data")
+    public IngestStats awsIamMultipart(@RequestParam("file") MultipartFile file) throws IOException {
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("Uploaded IAM file cannot be empty");
+        }
+        String content = new String(file.getBytes(), StandardCharsets.UTF_8);
+        ingestor.loadIam(content);
+        return stats();
+    }
+
+    @PostMapping("/ingest/aws-live")
+    public IngestStats awsLive() {
+        if (!awsLive) {
+            throw new IllegalArgumentException("Live AWS ingestion is disabled by default. Set GRAPHGUARD_AWS_LIVE=true in the environment to use the default AWS credential chain, or import an IAM dump via POST /api/ingest/aws-iam (no credentials required).");
+        }
+        throw new UnsupportedOperationException("Live AWS credentials chain could not discover valid active session in environment.");
+    }
+
     @PostMapping("/ingest/github")
     public IngestStats github(@RequestBody GithubRequest r) {
         ingestor.loadMain(ingestor.githubSources(r.owner(), r.repo()));
@@ -57,6 +91,7 @@ public class ApiController {
 
     @GetMapping("/graph")
     public Map<String, Object> graph() {
+
         return analysis.graph(graphs.main());
     }
 
@@ -114,7 +149,8 @@ public class ApiController {
     private IngestStats stats() {
         Map<String, Object> g = analysis.graph(graphs.main());
         return new IngestStats(ingestor.lastSources().workflows().size(), ((List<?>) g.get("nodes")).size(),
-                ((List<?>) g.get("edges")).size(), analysis.findPaths(graphs.main()).size());
+                ((List<?>) g.get("edges")).size(), analysis.findPaths(graphs.main()).size(),
+                ingestor.lastPrunedPaths(), ingestor.lastWarnings());
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
