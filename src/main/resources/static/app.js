@@ -8,6 +8,16 @@ const COLORS = {
   Resource: '#06b6d4', 
   Repo: '#64748b' 
 };
+const OUTCOME = {
+  answered_with_path: { cls: 'ok', text: 'Answered with path' },
+  memory: { cls: 'mem', text: 'Memory' },
+  not_in_graph: { cls: 'warn', text: 'Not in graph' },
+  unknown_node: { cls: 'bad', text: 'Unknown node' }
+};
+function badge(outcome) {
+  const o = OUTCOME[outcome] || { cls: 'warn', text: outcome || 'unknown' };
+  return `<span class="badge ${o.cls}">${esc(o.text)}</span>`;
+}
 const $ = id => document.getElementById(id);
 let cy;
 let paths = [];
@@ -191,21 +201,35 @@ async function showChoke() {
     (rows ? `<table><tr><th>Link</th><th>Impact</th><th></th></tr>${rows}</table>` : '<p class="good">No active attack paths.</p>');
 }
 
+async function showLoadBearing() {
+  const c = await api('/api/load-bearing?limit=5');
+  const rows = (c.rows || []).map((r, i) =>
+    `<tr><td>#${i + 1}</td><td><b>${esc(r.name || r.id)}</b></td><td><span class="pill-badge pill-purple">${esc(r.label || '')}</span></td><td>score: ${Number(r.score).toFixed(4)}</td></tr>`
+  ).join('');
+  $('detail').innerHTML = `<h2>Most Depended-On Nodes (${esc(c.algorithm || 'PageRank')})</h2>` +
+    (rows ? `<table><tr><th>Rank</th><th>Node</th><th>Label</th><th>Score</th></tr>${rows}</table>` : '<p class="good">No nodes found.</p>');
+}
+
 async function blast(id, depth) {
   depth = depth || 4;
   const r = await api('/api/blast-radius?node=' + encodeURIComponent(id) + '&depth=' + depth);
+  if (r.outcome === 'unknown_node' || r.outcome === 'not_in_graph') {
+    $('detail').innerHTML = `<h2>Blast radius: "${esc(id)}"</h2>` +
+      `<p class="bad">${badge(r.outcome)} ${esc(r.message || 'No nodes reachable or node not in graph.')}</p>`;
+    return r;
+  }
   cy.elements().removeClass('hot blast dim');
-  r.nodes.forEach(n => cy.getElementById(n.id).addClass('blast'));
-  cy.getElementById(id).addClass('blast');
-  const groups = Object.entries(r.byLabel).map(([k, v]) => `${v} ${esc(k)}`).join(', ') || 'nothing';
-  const sens = r.sensitiveReached.length ? `<p class="bad">Sensitive targets reached: ${r.sensitiveReached.map(esc).join(', ')}</p>` : '<p class="good">No sensitive target reachable.</p>';
+  (r.nodes || []).forEach(n => cy.getElementById(n.id).addClass('blast'));
+  if (cy.getElementById(id)) cy.getElementById(id).addClass('blast');
+  const groups = Object.entries(r.byLabel || {}).map(([k, v]) => `${v} ${esc(k)}`).join(', ') || 'nothing';
+  const sens = (r.sensitiveReached && r.sensitiveReached.length) ? `<p class="bad">Sensitive targets reached: ${r.sensitiveReached.map(esc).join(', ')}</p>` : '<p class="good">No sensitive target reachable.</p>';
   const nodeRows = (r.nodes || []).map(n => {
     const via = Array.isArray(n.via) ? n.via : [];
     const viaHtml = via.length > 1 ? `<div class="via-path">${via.map(esc).map(v => `<span>${v}</span>`).join('')}</div>` : '';
     const hops = n.hops != null ? n.hops : '?';
     return `<li class="${n.sensitive ? 'sensitive' : ''}">${esc(n.name)} <em>(${esc(n.label)}, ${hops} hop${hops === 1 ? '' : 's'})</em>${viaHtml}</li>`;
   }).join('');
-  $('detail').innerHTML = `<h2>Blast radius of ${esc(cy.getElementById(id).data('label') || id)} (depth ${depth})</h2><p>If compromised it can reach ${r.reachableCount} node(s): ${groups}.</p>${sens}<ul class="node-list">${nodeRows}</ul>`;
+  $('detail').innerHTML = `<h2>${badge(r.outcome)} Blast radius of ${esc((cy.getElementById(id) && cy.getElementById(id).data('label')) || id)} (depth ${depth})</h2><p>If compromised it can reach ${r.reachableCount} node(s): ${groups}.</p>${sens}<ul class="node-list">${nodeRows}</ul>`;
   return r;
 }
 // =====================================================================
@@ -298,7 +322,8 @@ async function depthContrast() {
     api('/api/blast-radius?node=' + encodeURIComponent(id) + '&depth=4')
   ]);
   if (r1.outcome === 'unknown_node' || r4.outcome === 'unknown_node') {
-    $('depth-panel').innerHTML = `<p class="bad">Node not found in graph: "${esc(id)}". This node is not in the graph.</p>`;
+    const msg = r1.message || r4.message || `Node not found in graph: "${esc(id)}". This node is not in the graph.`;
+    $('depth-panel').innerHTML = `<p class="bad">${badge('unknown_node')} ${esc(msg)}</p>`;
     return;
   }
   const ids1 = new Set((r1.nodes || []).map(n => n.id));
@@ -355,10 +380,19 @@ async function ask() {
   $('q').value = '';
   $('log').insertAdjacentHTML('beforeend', `<div class="msg user">${esc(q)}</div>`);
   const r = await post('/api/agent/ask', { question: q });
-  const tools = r.toolCalls.map(c => c.name).join(', ') || 'none';
-  $('log').insertAdjacentHTML('beforeend', `<div class="msg">${esc(r.answer)}<small>tools: ${esc(tools)} · ${esc(r.mode)}</small></div>`);
+  const b = r.outcome ? badge(r.outcome) + ' ' : '';
+  let traceHtml = '';
+  if (r.toolCalls && r.toolCalls.length) {
+    traceHtml = '<div class="trace">' + r.toolCalls.map(c => {
+      const a = JSON.stringify(c.args || c.input || {});
+      const ms = c.ms != null ? c.ms : (c.millis != null ? c.millis : 0);
+      const rows = c.rows != null ? c.rows : 0;
+      return `<div class="trace-item">tool: <b>${esc(c.name)}</b>(${esc(a)}) &rarr; ${rows} row(s) in ${ms}ms [${esc(c.outcome || 'ok')}]</div>`;
+    }).join('') + '</div>';
+  }
+  $('log').insertAdjacentHTML('beforeend', `<div class="msg">${b}${esc(r.answer)}${traceHtml}<small>mode: ${esc(r.mode)}</small></div>`);
   $('log').scrollTop = $('log').scrollHeight;
-  if (r.highlightPaths.length) highlight(r.highlightPaths);
+  if (r.highlightPaths && r.highlightPaths.length) highlight(r.highlightPaths);
 }
 
 $('detail').addEventListener('click', guard(async ev => {
@@ -402,6 +436,7 @@ $('btnGithub').onclick = guard(async () => {
 $('btnPaths').onclick = guard(showPaths);
 $('btnChoke').onclick = guard(showChoke);
 $('btnDepth').onclick = guard(depthContrast);
+$('btnLoad').onclick = guard(showLoadBearing);
 $('btnReset').onclick = () => { cy.elements().removeClass('hot blast dim'); $('sim').innerHTML = ''; };
 $('btnAsk').onclick = guard(ask);
 $('q').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnAsk').click(); });

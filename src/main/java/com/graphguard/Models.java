@@ -20,5 +20,6 @@ public final class Models {
     public record AskRequest(String question) {}
     public record GithubRequest(String owner, String repo) {}
     public record DecisionRequest(String pathKey, String owner, String reason, Integer days) {}
-    public record AgentAnswer(String answer, List<Map<String, Object>> toolCalls, List<List<String>> highlightPaths, String mode) {}
+    public record FindingRequest(String node, String text) {}
+    public record AgentAnswer(String answer, List<Map<String, Object>> toolCalls, List<List<String>> highlightPaths, String mode, String outcome) {}
 }

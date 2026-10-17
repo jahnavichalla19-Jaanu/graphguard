@@ -38,7 +38,7 @@ public class Ingestor {
     private static final Pattern SHA = Pattern.compile("^[0-9a-f]{40}$");
     private static final Pattern SECRET = Pattern.compile("\\$\\{\\{\\s*secrets\\.([A-Za-z0-9_]+)\\s*\\}\\}");
     private static final Pattern SAFE_NAME = Pattern.compile("^[A-Za-z0-9_.-]+$");
-    private static final List<String> LABELS = List.of("Repo", "Workflow", "Trigger", "Job", "Action", "Secret", "Role", "Resource", "Decision");
+    private static final List<String> LABELS = List.of("Repo", "Workflow", "Trigger", "Job", "Action", "Secret", "Role", "Resource", "Decision", "Finding");
     private static final List<String> COMPUTE_ACTIONS = List.of("lambda:CreateFunction", "ec2:RunInstances", "cloudformation:CreateStack", "glue:CreateDevEndpoint");
 
     private final GraphService graphs;
@@ -109,7 +109,7 @@ public class Ingestor {
 
     private void ingest(String graph, SourceSet src, boolean reset) {
         if (reset) {
-            graphs.write(graph, "MATCH (n) WHERE NOT 'Decision' IN labels(n) DETACH DELETE n", Map.of());
+            graphs.write(graph, "MATCH (n) WHERE NOT 'Decision' IN labels(n) AND NOT 'Finding' IN labels(n) DETACH DELETE n", Map.of());
         }
         for (String label : LABELS) {
             try {
@@ -120,6 +120,17 @@ public class Ingestor {
         ingestIam(graph, src.iamJson());
         for (WorkflowFile wf : src.workflows()) {
             ingestWorkflow(graph, wf);
+        }
+        if (reset) {
+            relinkMemory(graph);
+        }
+    }
+
+    public void relinkMemory(String graph) {
+        try {
+            graphs.write(graph, "MATCH (d:Decision) WHERE d.targets IS NOT NULL UNWIND d.targets AS tid MATCH (n {id: tid}) MERGE (d)-[:APPLIES_TO]->(n)", Map.of());
+            graphs.write(graph, "MATCH (f:Finding) WHERE f.targets IS NOT NULL UNWIND f.targets AS tid MATCH (n {id: tid}) MERGE (f)-[:ABOUT]->(n)", Map.of());
+        } catch (Exception ignored) {
         }
     }
 

@@ -1,10 +1,11 @@
- package com.graphguard;
+package com.graphguard;
 
 import com.graphguard.Models.AgentAnswer;
 import com.graphguard.Models.AskRequest;
 import com.graphguard.Models.AttackPath;
 import com.graphguard.Models.DecisionRequest;
 import com.graphguard.Models.Edge;
+import com.graphguard.Models.FindingRequest;
 import com.graphguard.Models.GithubRequest;
 import com.graphguard.Models.IngestStats;
 import com.graphguard.Models.SimResult;
@@ -69,9 +70,29 @@ public class ApiController {
         return analysis.blastRadius(graphs.main(), node, depth);
     }
 
+    @GetMapping("/path-between")
+    public Map<String, Object> pathBetween(@RequestParam String from, @RequestParam String to) {
+        return analysis.pathBetween(graphs.main(), from, to);
+    }
+
+    @GetMapping("/load-bearing")
+    public Map<String, Object> loadBearing(@RequestParam(defaultValue = "5") int limit) {
+        return analysis.loadBearing(graphs.main(), limit);
+    }
+
     @GetMapping("/choke-points")
     public Map<String, Object> choke() {
         return analysis.chokePoints(graphs.main());
+    }
+
+    @GetMapping("/recall")
+    public Map<String, Object> recall(@RequestParam String node) {
+        return analysis.recall(graphs.main(), node);
+    }
+
+    @PostMapping("/findings")
+    public Map<String, Object> findings(@RequestBody FindingRequest r) {
+        return analysis.saveFinding(graphs.main(), r.node(), r.text());
     }
 
     @PostMapping("/simulate-fix")
