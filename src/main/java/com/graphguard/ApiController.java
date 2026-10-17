@@ -96,8 +96,19 @@ public class ApiController {
     }
 
     @GetMapping("/paths")
-    public List<AttackPath> paths() {
-        return analysis.findPaths(graphs.main());
+    public List<AttackPath> paths(@RequestParam(required = false) String minSeverity,
+                                  @RequestParam(required = false) String entry) {
+        return analysis.findPaths(graphs.main(), minSeverity, entry, minSeverity != null || entry != null);
+    }
+
+    @GetMapping("/findings")
+    public List<com.graphguard.Models.RuleFinding> ruleFindings() {
+        return analysis.findings(graphs.main());
+    }
+
+    @GetMapping("/patches")
+    public List<com.graphguard.Models.PatchSuggestion> patchSuggestions() {
+        return analysis.patches(graphs.main());
     }
 
     @GetMapping("/blast-radius")

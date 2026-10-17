@@ -40,10 +40,16 @@ public class AnalysisService {
 
     private final GraphService graphs;
     private final Ingestor ingestor;
+    private final DetectionEngine detectionEngine;
 
     public AnalysisService(GraphService graphs, Ingestor ingestor) {
+        this(graphs, ingestor, new DetectionEngine(new AwsIamService()));
+    }
+
+    public AnalysisService(GraphService graphs, Ingestor ingestor, DetectionEngine detectionEngine) {
         this.graphs = graphs;
         this.ingestor = ingestor;
+        this.detectionEngine = detectionEngine != null ? detectionEngine : new DetectionEngine(new AwsIamService());
     }
 
     public record ResolvedNode(String id, String name, String label, boolean found, String message, List<String> candidates) {}
@@ -101,6 +107,10 @@ public class AnalysisService {
     }
 
     public List<AttackPath> findPaths(String graph) {
+        return findPaths(graph, null, null, false);
+    }
+
+    public List<AttackPath> findPaths(String graph, String minSeverity, String entryFilter, boolean sortBySeverity) {
         Map<String, String> accepted = activeDecisions(graph);
         Map<String, AttackPath> unique = new LinkedHashMap<>();
         for (Map<String, Object> row : graphs.read(graph, PATH_QUERY, Map.of())) {
@@ -116,12 +126,44 @@ public class AnalysisService {
             for (int i = 0; i < types.size(); i++) {
                 explanation.add(sentence(types.get(i), names.get(i), names.get(i + 1)));
             }
-            unique.put(key, new AttackPath(key, types.size(), ids, names, labels, types, explanation,
-                    accepted.containsKey(key), accepted.getOrDefault(key, "")));
+            AttackPath raw = new AttackPath(key, types.size(), ids, names, labels, types, explanation,
+                    accepted.containsKey(key), accepted.getOrDefault(key, ""));
+            AttackPath scored = detectionEngine.evaluatePathRisk(raw);
+            unique.put(key, scored);
         }
-        return unique.values().stream()
+
+        List<AttackPath> list = new ArrayList<>(unique.values());
+        if (minSeverity != null || entryFilter != null || sortBySeverity) {
+            return detectionEngine.scoreAndFilterPaths(list, minSeverity, entryFilter);
+        }
+        return list.stream()
                 .sorted(Comparator.comparingInt(AttackPath::length).thenComparing(AttackPath::key))
                 .toList();
+    }
+
+    public List<com.graphguard.Models.RuleFinding> findings(String graph) {
+        if (ingestor.lastSources() != null) {
+            return detectionEngine.scanAll(ingestor.lastSources());
+        }
+        return List.of();
+    }
+
+    public List<com.graphguard.Models.PatchSuggestion> patches(String graph) {
+        List<com.graphguard.Models.PatchSuggestion> out = new ArrayList<>();
+        if (ingestor.lastSources() != null) {
+            List<com.graphguard.Models.RuleFinding> fList = detectionEngine.scanAll(ingestor.lastSources());
+            for (com.graphguard.Models.RuleFinding f : fList) {
+                if (f.file() != null) {
+                    for (com.graphguard.Models.WorkflowFile wf : ingestor.lastSources().workflows()) {
+                        if (wf.path().equals(f.file())) {
+                            out.add(detectionEngine.generatePatch(f, wf));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return out;
     }
 
     public Map<String, Object> graph(String graph) {
