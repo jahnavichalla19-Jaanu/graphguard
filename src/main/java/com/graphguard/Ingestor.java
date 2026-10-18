@@ -65,6 +65,17 @@ public class Ingestor implements InitializingBean {
     private final ObjectMapper yaml = new ObjectMapper(new YAMLFactory());
     private final RestClient http;
     private volatile SourceSet lastSources;
+    private volatile String userUploadedIam = null;
+    private volatile String iamStatus = "none";
+
+    public String iamStatus() {
+        return iamStatus;
+    }
+
+    public void resetUserUploadedIam() {
+        this.userUploadedIam = null;
+        this.iamStatus = "none";
+    }
 
     private final List<String> lastWarnings = new ArrayList<>();
     private int lastPrunedPaths = 0;
@@ -110,6 +121,9 @@ public class Ingestor implements InitializingBean {
     }
 
     public void ensureIndexes(String graph) {
+        if (graph == null) {
+            return;
+        }
         if (!indexedGraphs.add(graph)) {
             return;
         }
@@ -230,19 +244,31 @@ public class Ingestor implements InitializingBean {
         if (files.isEmpty()) {
             throw new IllegalArgumentException("No workflow files found in " + owner + "/" + repo);
         }
-        String currentIam = lastSources != null ? lastSources.iamJson() : sampleSources().iamJson();
+        String currentIam = (userUploadedIam != null && !userUploadedIam.isBlank()) ? userUploadedIam : "";
+        iamStatus = (userUploadedIam != null && !userUploadedIam.isBlank()) ? "uploaded" : "none";
         return new SourceSet(files, currentIam);
     }
 
     public synchronized void loadMain(SourceSet src) {
         lastSources = src;
+        if (src.iamJson() == null || src.iamJson().isBlank()) {
+            iamStatus = "none";
+        } else if (userUploadedIam != null && userUploadedIam.equals(src.iamJson())) {
+            iamStatus = "uploaded";
+        } else if (src.iamJson().equals(sampleSources().iamJson())) {
+            iamStatus = "demo";
+        } else {
+            iamStatus = "uploaded";
+        }
         ingest(graphs.main(), src, true);
         notifyInvalidation();
     }
 
     public synchronized void loadIam(String iamJson) {
+        userUploadedIam = iamJson;
+        iamStatus = (iamJson != null && !iamJson.isBlank()) ? "uploaded" : "none";
         SourceSet current = lastSources != null ? lastSources : sampleSources();
-        SourceSet updated = new SourceSet(current.workflows(), iamJson);
+        SourceSet updated = new SourceSet(current.workflows(), iamJson != null ? iamJson : "");
         loadMain(updated);
     }
 
@@ -282,6 +308,9 @@ public class Ingestor implements InitializingBean {
     }
 
     private Map<String, ParsedRole> ingestIam(String g, String iamJson) {
+        if (iamJson == null || iamJson.isBlank()) {
+            return Map.of();
+        }
         if (awsIamService.isAwsAuthDetails(iamJson)) {
             return ingestAwsAuthDetails(g, iamJson);
         }

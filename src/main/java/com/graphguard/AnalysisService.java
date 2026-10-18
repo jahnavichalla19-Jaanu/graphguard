@@ -210,7 +210,7 @@ public class AnalysisService {
     public Map<String, Object> graph(String graph) {
         List<Map<String, Object>> nodes = graphs.read(graph, """
                 MATCH (n) WHERE NOT 'Decision' IN labels(n) AND NOT 'Finding' IN labels(n)
-                RETURN n.id AS id, n.name AS name, labels(n)[0] AS label, n.sensitive AS sensitive, n.untrusted AS untrusted, n.pinned AS pinned
+                RETURN n.id AS id, n.name AS name, labels(n)[0] AS label, n.sensitive AS sensitive, n.untrusted AS untrusted, n.pinned AS pinned, n.executesUntrusted AS executesUntrusted
                 """, Map.of());
         List<Map<String, Object>> edges = graphs.read(graph, """
                 MATCH (a)-[r]->(b) WHERE NOT 'Decision' IN labels(a) AND NOT 'Finding' IN labels(a)
@@ -220,6 +220,7 @@ public class AnalysisService {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("nodes", nodes);
         out.put("edges", edges);
+        out.put("iamStatus", ingestor.iamStatus());
         return out;
     }
 

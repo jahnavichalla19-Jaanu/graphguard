@@ -52,6 +52,7 @@ public class ApiController {
 
     @PostMapping("/ingest/sample")
     public IngestStats sample() {
+        ingestor.resetUserUploadedIam();
         ingestor.loadMain(ingestor.sampleSources());
         return stats();
     }
@@ -161,7 +162,7 @@ public class ApiController {
         Map<String, Object> g = analysis.graph(graphs.main());
         return new IngestStats(ingestor.lastSources().workflows().size(), ((List<?>) g.get("nodes")).size(),
                 ((List<?>) g.get("edges")).size(), analysis.findPaths(graphs.main()).size(),
-                ingestor.lastPrunedPaths(), ingestor.lastWarnings());
+                ingestor.lastPrunedPaths(), ingestor.lastWarnings(), ingestor.iamStatus());
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

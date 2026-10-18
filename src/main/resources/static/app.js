@@ -21,6 +21,9 @@ function badge(outcome) {
 const $ = id => document.getElementById(id);
 let cy;
 let paths = [];
+let lastGraphData = null;
+let lastPaths = [];
+let lastFindings = [];
 
 let inFlightGets = new Map();
 let activeCalls = 0;
@@ -116,15 +119,15 @@ function initGraph() {
         style: { 
           'background-color': e => COLORS[e.data('kind')] || '#64748b', 
           label: 'data(label)', 
-          'font-size': 10, 
+          'font-size': 11, 
           'font-family': 'JetBrains Mono, monospace',
           color: '#e2e8f0', 
           'text-valign': 'bottom', 
-          'text-margin-y': 5, 
-          width: 32, 
-          height: 32, 
+          'text-margin-y': 6, 
+          width: 36, 
+          height: 36, 
           'text-wrap': 'ellipsis', 
-          'text-max-width': 130,
+          'text-max-width': 150,
           'border-width': 1.5,
           'border-color': 'rgba(255, 255, 255, 0.25)',
           'shadow-blur': 12,
@@ -201,18 +204,116 @@ function initGraph() {
   cy.on('tap', 'node', guard(e => blast(e.target.id())));
 }
 
-async function loadGraph() {
-  const [g, p] = await Promise.all([
-    api('/api/graph'),
-    api('/api/paths').catch(() => [])
-  ]);
-  paths = p || [];
+function updateIamBadge(status) {
+  const b = $('iamBadge');
+  const s = $('sIam');
+  let text = 'IAM: none loaded';
+  let cls = 'badge-iam-none';
+  let statText = 'none loaded';
+  if (status === 'demo') {
+    text = 'IAM: demo data';
+    cls = 'badge-iam-demo';
+    statText = 'demo data';
+  } else if (status === 'uploaded') {
+    text = 'IAM: uploaded data';
+    cls = 'badge-iam-uploaded';
+    statText = 'uploaded export';
+  }
+  if (b) {
+    b.textContent = text;
+    b.className = 'badge-iam ' + cls;
+  }
+  if (s) {
+    s.textContent = statText;
+  }
+}
+
+function renderGraphElements() {
+  if (!cy || !lastGraphData) return;
+  const showAll = $('toggleShowAllNodes') ? $('toggleShowAllNodes').checked : false;
+
+  let nodesToRender = lastGraphData.nodes || [];
+  let edgesToRender = lastGraphData.edges || [];
+
+  if (!showAll) {
+    const relevantNodeIds = new Set();
+
+    // 1. Nodes on attack paths
+    (lastPaths || []).forEach(p => {
+      (p.nodeIds || []).forEach(id => relevantNodeIds.add(id));
+    });
+
+    // 2. Nodes tied to rule findings
+    (lastFindings || []).forEach(f => {
+      if (f.targetId) relevantNodeIds.add(f.targetId);
+      nodesToRender.forEach(n => {
+        if (n.id === f.targetId || (f.targetName && n.name === f.targetName)) {
+          relevantNodeIds.add(n.id);
+        }
+        if (f.file && (n.path === f.file || (n.id && n.id.endsWith(f.file)))) {
+          relevantNodeIds.add(n.id);
+        }
+      });
+    });
+
+    if (relevantNodeIds.size > 0) {
+      nodesToRender = nodesToRender.filter(n => relevantNodeIds.has(n.id));
+      edgesToRender = edgesToRender.filter(e => relevantNodeIds.has(e.source) && relevantNodeIds.has(e.target));
+    }
+  }
+
   const els = [];
-  (g.nodes || []).forEach(n => els.push({ data: { id: n.id, label: n.name, kind: n.label, sensitive: n.sensitive === true } }));
-  (g.edges || []).forEach(e => els.push({ data: { id: e.source + '|' + e.type + '|' + e.target, source: e.source, target: e.target, label: e.type } }));
+  nodesToRender.forEach(n => {
+    els.push({
+      data: {
+        id: n.id,
+        label: n.name,
+        kind: n.label,
+        sensitive: n.sensitive === true,
+        untrusted: n.untrusted === true
+      }
+    });
+  });
+
+  edgesToRender.forEach(e => {
+    els.push({
+      data: {
+        id: e.source + '|' + e.type + '|' + e.target,
+        source: e.source,
+        target: e.target,
+        label: e.type
+      }
+    });
+  });
+
   cy.elements().remove();
   cy.add(els);
-  cy.layout({ name: 'breadthfirst', directed: true, spacingFactor: 1.15, padding: 25 }).run();
+
+  // Readable layout with larger spacing
+  cy.layout({
+    name: 'breadthfirst',
+    directed: true,
+    spacingFactor: 1.85,
+    padding: 40,
+    nodeDimensionsIncludeLabels: true,
+    avoidOverlap: true
+  }).run();
+}
+
+async function loadGraph() {
+  const [g, p, f] = await Promise.all([
+    api('/api/graph'),
+    api('/api/paths').catch(() => []),
+    api('/api/findings').catch(() => [])
+  ]);
+  lastGraphData = g || { nodes: [], edges: [] };
+  paths = p || [];
+  lastPaths = paths;
+  lastFindings = f || [];
+
+  updateIamBadge(g.iamStatus || 'none');
+  renderGraphElements();
+
   if ($('sNodes')) $('sNodes').textContent = (g.nodes || []).length;
   if ($('sEdges')) $('sEdges').textContent = (g.edges || []).length;
   if ($('sPaths')) $('sPaths').textContent = paths.length;
@@ -241,16 +342,66 @@ function pathCard(p, i) {
 
 async function showPaths(fromCache = false) {
   if (!fromCache || !paths || !paths.length) {
-    paths = await api('/api/paths');
+    paths = await api('/api/paths').catch(() => []);
+    lastPaths = paths;
   }
   highlight(paths.filter(p => !p.accepted).map(p => p.nodeIds));
   $('sim').innerHTML = '';
-  $('detail').innerHTML = `<h2>${paths.length} attack path(s) from an untrusted trigger to a sensitive target</h2>` +
-    (paths.length ? paths.map(pathCard).join('') : '<p class="good">No path found.</p>');
+
   if ($('sPaths')) {
     $('sPaths').textContent = paths.length;
     $('sAcc').textContent = paths.filter(p => p.accepted).length;
   }
+
+  if (paths.length === 0) {
+    const allNodes = (lastGraphData && lastGraphData.nodes) || [];
+    const wfNodes = allNodes.filter(n => (n.label || n.kind) === 'Workflow');
+    const numWorkflows = wfNodes.length;
+
+    const untrustedTrgIds = new Set(allNodes.filter(n => (n.label || n.kind) === 'Trigger' && n.untrusted).map(n => n.id));
+    const allEdges = (lastGraphData && lastGraphData.edges) || [];
+    const untrustedEdges = allEdges.filter(e => untrustedTrgIds.has(e.source) && (e.type === 'FIRES' || !e.type));
+    const wfWithUntrustedTrg = new Set(untrustedEdges.map(e => e.target)).size;
+
+    let findingsList = lastFindings || [];
+    if (!findingsList.length) {
+      findingsList = await api('/api/findings').catch(() => []);
+      lastFindings = findingsList;
+    }
+
+    const findingCards = findingsList.length > 0 ? findingsList.map(f => `
+      <div class="rule-card">
+        <div class="rule-card-header">
+          <span class="rule-card-title">${esc(f.title)}</span>
+          <span class="pill-badge ${f.severity === 'high' ? 'pill-red' : f.severity === 'medium' ? 'pill-purple' : 'pill-blue'}">${esc(f.ruleId)} &bull; ${esc(f.severity)}</span>
+        </div>
+        <div class="rule-card-meta">${esc(f.file || '')}${f.line ? ':' + f.line : ''} &bull; target: <code>${esc(f.targetName || f.targetId || '')}</code></div>
+        <div class="rule-card-desc">${esc(f.description)}</div>
+        <div class="rule-card-remed"><strong>Remediation:</strong> ${esc(f.remediation)}</div>
+      </div>
+    `).join('') : '<p class="good" style="margin-top:10px;">No static rule findings detected.</p>';
+
+    $('detail').innerHTML = `
+      <div class="zero-paths-banner">
+        <h3>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+          No exploitable attack paths found
+        </h3>
+        <p>${numWorkflows} workflow${numWorkflows === 1 ? '' : 's'} scanned, ${wfWithUntrustedTrg} use untrusted triggers, and they don&#39;t run untrusted code.</p>
+      </div>
+      <div class="findings-section">
+        <div class="findings-header">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          Static Rule Findings (${findingsList.length})
+        </div>
+        ${findingCards}
+      </div>
+    `;
+    return;
+  }
+
+  $('detail').innerHTML = `<h2>${paths.length} attack path(s) from an untrusted trigger to a sensitive target</h2>` +
+    paths.map(pathCard).join('');
 }
 
 async function showChoke() {
@@ -465,7 +616,12 @@ $('detail').addEventListener('click', guard(async ev => {
   if (d.act === 'accept') await accept(d.key);
 }));
 
-$('btnSample').onclick = guard(async () => { await post('/api/ingest/sample'); await loadGraph(); await showPaths(true); });
+$('btnSample').onclick = guard(async () => {
+  const s = await post('/api/ingest/sample');
+  if (s && s.iamStatus) updateIamBadge(s.iamStatus);
+  await loadGraph();
+  await showPaths(true);
+});
 $('btnGithub').onclick = guard(async () => {
   const modalRes = await showModal({
     title: 'Scan GitHub Repository',
@@ -490,7 +646,8 @@ $('btnGithub').onclick = guard(async () => {
   }
   const owner = parts[0];
   const repo = parts[1];
-  await post('/api/ingest/github', { owner, repo });
+  const s = await post('/api/ingest/github', { owner, repo });
+  if (s && s.iamStatus) updateIamBadge(s.iamStatus);
   await loadGraph();
   await showPaths(true);
 });
@@ -498,9 +655,23 @@ $('btnPaths').onclick = guard(showPaths);
 $('btnChoke').onclick = guard(showChoke);
 $('btnDepth').onclick = guard(depthContrast);
 $('btnLoad').onclick = guard(showLoadBearing);
-$('btnReset').onclick = () => { cy.elements().removeClass('hot blast dim'); $('sim').innerHTML = ''; };
+$('btnReset').onclick = () => {
+  cy.elements().removeClass('hot blast dim');
+  $('sim').innerHTML = '';
+  renderGraphElements();
+};
 $('btnAsk').onclick = guard(ask);
 $('q').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnAsk').click(); });
+
+const toggleEl = $('toggleShowAllNodes');
+if (toggleEl) {
+  toggleEl.addEventListener('change', () => {
+    renderGraphElements();
+    if (paths && paths.length) {
+      highlight(paths.filter(p => !p.accepted).map(p => p.nodeIds));
+    }
+  });
+}
 
 // Quick prompt pills
 document.querySelectorAll('.agent-pills .pill').forEach(pill => {

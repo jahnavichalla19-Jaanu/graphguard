@@ -34,9 +34,12 @@ public final class Models {
     public record RankedEdge(String source, String type, String target, String description, int paths) {}
     public record SimResult(Edge edge, int before, int after, List<String> removedKeys, List<String> newKeys,
                             boolean edgeExisted, String proposal, long millis) {}
-    public record IngestStats(int workflows, int nodes, int edges, int paths, int prunedPaths, List<String> warnings) {
+    public record IngestStats(int workflows, int nodes, int edges, int paths, int prunedPaths, List<String> warnings, String iamStatus) {
+        public IngestStats(int workflows, int nodes, int edges, int paths, int prunedPaths, List<String> warnings) {
+            this(workflows, nodes, edges, paths, prunedPaths, warnings, "none");
+        }
         public IngestStats(int workflows, int nodes, int edges, int paths) {
-            this(workflows, nodes, edges, paths, 0, List.of());
+            this(workflows, nodes, edges, paths, 0, List.of(), "none");
         }
     }
     public record AskRequest(String question) {}

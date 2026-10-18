@@ -25,7 +25,7 @@
       </div>
       <div>
         <div class="brand-title">
-          GraphGuard <span class="badge-falkor">FalkorDB</span>
+          GraphGuard <span class="badge-falkor">FalkorDB</span> <span id="iamBadge" class="badge-iam badge-iam-none">IAM: none loaded</span>
         </div>
         <div class="brand-subtitle">CI/CD & Cloud IAM Autonomous Graph Reasoning Agent</div>
       </div>
@@ -81,6 +81,10 @@
       <span class="stat-label">Accepted Risks</span>
       <b id="sAcc" class="stat-val glow-purple">-</b>
     </div>
+    <div class="stat-card">
+      <span class="stat-label">IAM State</span>
+      <b id="sIam" class="stat-val glow-cyan">none loaded</b>
+    </div>
     <div class="stat-legend">
       <span class="pill-badge pill-red">Trigger</span>
       <span class="pill-badge pill-blue">Workflow</span>
@@ -130,6 +134,13 @@
       <!-- Graph Canvas Viewport -->
       <div id="cy-wrapper">
         <div id="cy"></div>
+        <div class="cy-controls">
+          <label class="toggle-control" id="lblShowAllNodes" title="Toggle between all graph nodes and filtered security-relevant nodes">
+            <input type="checkbox" id="toggleShowAllNodes">
+            <span class="toggle-switch"></span>
+            <span class="toggle-label">Show all nodes</span>
+          </label>
+        </div>
         <div class="cy-overlay-hint">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
           Interactive Topology &bull; Click any node to compute instant multi-hop blast radius

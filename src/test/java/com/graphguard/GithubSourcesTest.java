@@ -31,6 +31,7 @@ public class GithubSourcesTest {
     @BeforeEach
     void setUp() {
         mockGraphs = Mockito.mock(GraphService.class);
+        Mockito.when(mockGraphs.main()).thenReturn("test_graphguard");
         mockIam = Mockito.mock(AwsIamService.class);
     }
 
@@ -91,8 +92,79 @@ public class GithubSourcesTest {
         assertEquals(1, result.workflows().size());
         assertEquals(".github/workflows/ci.yml", result.workflows().get(0).path());
         assertEquals(workflowContent, result.workflows().get(0).yaml());
+        assertEquals("", result.iamJson(), "GitHub scan must start with empty IAM by default");
+        assertEquals("none", ingestor.iamStatus());
 
         server.verify();
+    }
+
+    @Test
+    void testGithubScanDoesNotReuseSampleIam() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RestClient client = builder.build();
+
+        Ingestor ingestor = new Ingestor(mockGraphs, mockIam, "", client);
+
+        // Preload sample data (demo mode)
+        ingestor.loadMain(ingestor.sampleSources());
+        assertEquals("demo", ingestor.iamStatus());
+
+        String listingJson = """
+                [
+                  {
+                    "name": "ci.yml",
+                    "url": "https://api.github.com/repos/org/repo/contents/.github/workflows/ci.yml?ref=main",
+                    "download_url": "https://raw.githubusercontent.com/org/repo/main/.github/workflows/ci.yml"
+                  }
+                ]
+                """;
+        server.expect(requestTo("https://api.github.com/repos/org/repo/contents/.github/workflows"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(listingJson, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.github.com/repos/org/repo/contents/.github/workflows/ci.yml?ref=main"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("name: CI\non: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n", MediaType.TEXT_PLAIN));
+
+        // When scanning a GitHub repo without uploaded IAM, sample IAM must NOT be reused
+        SourceSet githubResult = ingestor.githubSources("org", "repo");
+        assertEquals("", githubResult.iamJson(), "Sample IAM must not be reused for real GitHub scan");
+        assertFalse(githubResult.iamJson().contains("customer-db"));
+        assertEquals("none", ingestor.iamStatus());
+    }
+
+    @Test
+    void testGithubScanUsesUserUploadedIamIfProvided() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RestClient client = builder.build();
+
+        Ingestor ingestor = new Ingestor(mockGraphs, mockIam, "", client);
+
+        // User uploads custom IAM
+        String customIam = "{\"roles\":[{\"name\":\"custom-role\",\"admin\":false}],\"resources\":[]}";
+        ingestor.loadIam(customIam);
+        assertEquals("uploaded", ingestor.iamStatus());
+
+        String listingJson = """
+                [
+                  {
+                    "name": "ci.yml",
+                    "url": "https://api.github.com/repos/org/repo/contents/.github/workflows/ci.yml?ref=main",
+                    "download_url": "https://raw.githubusercontent.com/org/repo/main/.github/workflows/ci.yml"
+                  }
+                ]
+                """;
+        server.expect(requestTo("https://api.github.com/repos/org/repo/contents/.github/workflows"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(listingJson, MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.github.com/repos/org/repo/contents/.github/workflows/ci.yml?ref=main"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("name: CI\non: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n", MediaType.TEXT_PLAIN));
+
+        SourceSet githubResult = ingestor.githubSources("org", "repo");
+        assertEquals(customIam, githubResult.iamJson(), "User-uploaded IAM should be preserved for GitHub scan");
+        assertEquals("uploaded", ingestor.iamStatus());
     }
 
     @Test
