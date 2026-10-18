@@ -5,6 +5,7 @@ import com.graphguard.Models.Edge;
 import com.graphguard.Models.RankedEdge;
 import com.graphguard.Models.RankedNode;
 import com.graphguard.Models.SimResult;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -48,6 +49,7 @@ public class AnalysisService {
         this(graphs, ingestor, new DetectionEngine(new AwsIamService()));
     }
 
+    @Autowired
     public AnalysisService(GraphService graphs, Ingestor ingestor, DetectionEngine detectionEngine) {
         this.graphs = graphs;
         this.ingestor = ingestor;

@@ -12,6 +12,7 @@ import com.graphguard.Models.WorkflowFile;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
@@ -72,6 +73,7 @@ public class Ingestor implements InitializingBean {
         this(graphs, new AwsIamService(), githubToken);
     }
 
+    @Autowired
     public Ingestor(GraphService graphs, AwsIamService awsIamService, @Value("${github.token:}") String githubToken) {
         this.graphs = graphs;
         this.awsIamService = awsIamService != null ? awsIamService : new AwsIamService();

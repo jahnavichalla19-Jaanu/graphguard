@@ -69,6 +69,8 @@ public class GraphGuardTest {
     private static boolean checkFalkor() {
         try (Socket s = new Socket()) {
             s.connect(new InetSocketAddress("localhost", 6379), 400);
+            Driver driver = FalkorDB.driver("localhost", 6379);
+            driver.graph("test_check").query("MATCH (a), (b) CALL algo.SPpaths(a, b, 'FIRES') YIELD path RETURN path");
             return true;
         } catch (Exception e) {
             return false;
