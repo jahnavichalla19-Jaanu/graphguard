@@ -17,6 +17,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
@@ -24,6 +25,7 @@ import org.springframework.web.client.RestClient;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -61,7 +63,7 @@ public class Ingestor implements InitializingBean {
     private final String githubToken;
     private final ObjectMapper json = new ObjectMapper();
     private final ObjectMapper yaml = new ObjectMapper(new YAMLFactory());
-    private final RestClient http = RestClient.create();
+    private final RestClient http;
     private volatile SourceSet lastSources;
 
     private final List<String> lastWarnings = new ArrayList<>();
@@ -69,15 +71,27 @@ public class Ingestor implements InitializingBean {
     private final Set<String> indexedGraphs = ConcurrentHashMap.newKeySet();
     private final List<Runnable> invalidationListeners = new CopyOnWriteArrayList<>();
 
+    private static RestClient createDefaultRestClient() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(Duration.ofSeconds(5));
+        factory.setReadTimeout(Duration.ofSeconds(20));
+        return RestClient.builder().requestFactory(factory).build();
+    }
+
     public Ingestor(GraphService graphs, @Value("${github.token:}") String githubToken) {
         this(graphs, new AwsIamService(), githubToken);
     }
 
     @Autowired
     public Ingestor(GraphService graphs, AwsIamService awsIamService, @Value("${github.token:}") String githubToken) {
+        this(graphs, awsIamService, githubToken, createDefaultRestClient());
+    }
+
+    Ingestor(GraphService graphs, AwsIamService awsIamService, String githubToken, RestClient http) {
         this.graphs = graphs;
         this.awsIamService = awsIamService != null ? awsIamService : new AwsIamService();
         this.githubToken = githubToken != null ? githubToken : "";
+        this.http = http != null ? http : createDefaultRestClient();
     }
 
     public void addInvalidationListener(Runnable listener) {
@@ -148,14 +162,14 @@ public class Ingestor implements InitializingBean {
         List<WorkflowFile> files = new ArrayList<>();
         try {
             String url = "https://api.github.com/repos/" + owner + "/" + repo + "/contents/.github/workflows";
-            JsonNode listing = json.readTree(get(url, String.class));
-            record DownloadTarget(String name, String downloadUrl) {}
+            JsonNode listing = json.readTree(get(url, "application/vnd.github+json", String.class));
+            record DownloadTarget(String name, String url) {}
             List<DownloadTarget> targets = new ArrayList<>();
             for (JsonNode f : listing) {
                 String name = f.path("name").asText();
-                String downloadUrl = f.path("download_url").asText("");
-                if ((name.endsWith(".yml") || name.endsWith(".yaml")) && !downloadUrl.isBlank()) {
-                    targets.add(new DownloadTarget(name, downloadUrl));
+                String fileUrl = f.path("url").asText("");
+                if ((name.endsWith(".yml") || name.endsWith(".yaml")) && !fileUrl.isBlank()) {
+                    targets.add(new DownloadTarget(name, fileUrl));
                 }
             }
 
@@ -165,7 +179,7 @@ public class Ingestor implements InitializingBean {
                     List<Future<WorkflowFile>> futures = new ArrayList<>();
                     for (DownloadTarget t : targets) {
                         futures.add(pool.submit(() -> {
-                            String content = get(t.downloadUrl(), String.class);
+                            String content = get(t.url(), "application/vnd.github.raw", String.class);
                             return new WorkflowFile(owner + "/" + repo, ".github/workflows/" + t.name(), content);
                         }));
                     }
@@ -173,7 +187,7 @@ public class Ingestor implements InitializingBean {
                         try {
                             files.add(fut.get());
                         } catch (ExecutionException ee) {
-                            Throwable cause = ee.getCause();
+                            Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
                             if (cause instanceof RuntimeException re) {
                                 throw re;
                             }
@@ -197,18 +211,21 @@ public class Ingestor implements InitializingBean {
             }
         } catch (HttpClientErrorException e) {
             if (e.getStatusCode().value() == 403 || e.getStatusCode().value() == 429) {
-                throw new IllegalArgumentException("GitHub API rate limit exceeded (" + e.getStatusCode().value() + "). Set GITHUB_TOKEN environment variable to raise the rate limit.");
+                log.error("GitHub API rate limit exceeded ({}) for {}/{}: {}", e.getStatusCode().value(), owner, repo, e.getMessage(), e);
+                throw new IllegalArgumentException("GitHub API rate limit exceeded (" + e.getStatusCode().value() + "). Set GITHUB_TOKEN environment variable to raise the rate limit.", e);
             }
-            throw new IllegalArgumentException("Could not read .github/workflows of " + owner + "/" + repo + ": " + e.getMessage());
+            log.error("Could not read .github/workflows of {}/{}: {}: {}", owner, repo, e.getClass().getName(), e.getMessage(), e);
+            throw new IllegalArgumentException("Could not read .github/workflows of " + owner + "/" + repo + ": " + e.getClass().getName() + ": " + e.getMessage(), e);
         } catch (SecurityException se) {
+            log.error("SecurityException accessing .github/workflows of {}/{}: {}", owner, repo, se.getMessage(), se);
             throw se;
         } catch (Exception e) {
+            log.error("Could not read .github/workflows of {}/{}: {}: {}", owner, repo, e.getClass().getName(), e.getMessage(), e);
             String msg = e.getMessage() != null ? e.getMessage() : "";
             if (msg.contains("403") || msg.contains("429") || msg.toLowerCase().contains("rate limit")) {
-                throw new IllegalArgumentException("GitHub API rate limit exceeded. Set GITHUB_TOKEN environment variable to raise the rate limit.");
+                throw new IllegalArgumentException("GitHub API rate limit exceeded. Set GITHUB_TOKEN environment variable to raise the rate limit.", e);
             }
-            throw new IllegalArgumentException("Could not read .github/workflows of " + owner + "/" + repo
-                    + " (private repo, no workflows, or rate limit). Set GITHUB_TOKEN to raise the limit.");
+            throw new IllegalArgumentException("Could not read .github/workflows of " + owner + "/" + repo + ": " + e.getClass().getName() + ": " + e.getMessage(), e);
         }
         if (files.isEmpty()) {
             throw new IllegalArgumentException("No workflow files found in " + owner + "/" + repo);
@@ -669,11 +686,11 @@ public class Ingestor implements InitializingBean {
         return Pattern.compile("^" + regex + "$", Pattern.CASE_INSENSITIVE).matcher(text).matches();
     }
 
-    private <T> T get(String url, Class<T> type) {
+    private <T> T get(String url, String acceptHeader, Class<T> type) {
         URI uri = URI.create(url);
         validateGithubHost(uri);
         return http.get().uri(uri)
-                .header("Accept", "application/vnd.github+json")
+                .header("Accept", acceptHeader)
                 .headers(h -> {
                     if (!githubToken.isBlank()) {
                         h.setBearerAuth(githubToken);
@@ -682,9 +699,9 @@ public class Ingestor implements InitializingBean {
                 .retrieve().body(type);
     }
 
-    private void validateGithubHost(URI uri) {
+    void validateGithubHost(URI uri) {
         String host = uri.getHost();
-        if (host == null || (!host.equalsIgnoreCase("api.github.com") && !host.equalsIgnoreCase("raw.githubusercontent.com"))) {
+        if (host == null || !host.equalsIgnoreCase("api.github.com")) {
             throw new SecurityException("SSRF blocked: Disallowed host " + host);
         }
     }
