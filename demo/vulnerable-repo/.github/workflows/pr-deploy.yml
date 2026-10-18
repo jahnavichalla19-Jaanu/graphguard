@@ -1,0 +1,32 @@
+name: Vulnerable PR Deploy
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions: write-all
+
+jobs:
+  pr-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout untrusted PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Stale action (unpinned)
+        uses: actions/stale@v3
+
+      - name: Third-party action (unpinned tag)
+        uses: thirdparty-corp/security-check@v2
+
+      - name: Command injection via untrusted PR title
+        run: |
+          echo "Processing PR: ${{ github.event.pull_request.title }}"
+
+      - name: Deploy step referencing secret token
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          echo "Simulating deployment with fake deploy token placeholder"

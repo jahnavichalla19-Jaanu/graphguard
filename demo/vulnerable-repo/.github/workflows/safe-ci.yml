@@ -1,0 +1,22 @@
+name: Safe CI
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code with pinned SHA
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Third-party security check with pinned SHA
+        uses: thirdparty-corp/security-check@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Safe build step
+        run: |
+          echo "Running hardened build without untrusted inputs or leaked secrets"
