@@ -6,5 +6,23 @@ services:
       - "3000:3000"
     volumes:
       - falkor-data:/var/lib/falkordb/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      falkordb:
+        condition: service_healthy
+    environment:
+      - FALKORDB_HOST=falkordb
+      - FALKORDB_PORT=6379
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+
 volumes:
   falkor-data:
