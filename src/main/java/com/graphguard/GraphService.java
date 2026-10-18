@@ -11,15 +11,28 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 @Service
 public class GraphService {
+    public static final Set<String> EDGE_TYPES = AnalysisService.EDGE_TYPES;
+    public static final String PATH_QUERY = AnalysisService.PATH_QUERY;
+
     private final Driver driver;
     private final String mainGraph;
+    private final List<Consumer<String>> writeListeners = new CopyOnWriteArrayList<>();
 
     public GraphService(Driver driver, @Value("${falkordb.graph}") String mainGraph) {
         this.driver = driver;
         this.mainGraph = mainGraph;
+    }
+
+    public void onWrite(Consumer<String> listener) {
+        if (listener != null) {
+            writeListeners.add(listener);
+        }
     }
 
     public String main() {
@@ -66,6 +79,12 @@ public class GraphService {
 
     public void write(String graph, String cypher, Map<String, Object> params) {
         query(graph, cypher, params);
+        for (Consumer<String> listener : writeListeners) {
+            try {
+                listener.accept(graph);
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     public void deleteGraph(String graph) {

@@ -11,6 +11,7 @@ import com.graphguard.Models.SourceSet;
 import com.graphguard.Models.WorkflowFile;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
@@ -33,12 +34,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
-public class Ingestor {
+public class Ingestor implements InitializingBean {
     private static final Logger log = LoggerFactory.getLogger(Ingestor.class);
     private static final Set<String> UNTRUSTED_EVENTS = Set.of("pull_request_target", "issue_comment", "workflow_run");
     private static final Pattern SHA = Pattern.compile("^[0-9a-f]{40}$");
@@ -57,6 +65,8 @@ public class Ingestor {
 
     private final List<String> lastWarnings = new ArrayList<>();
     private int lastPrunedPaths = 0;
+    private final Set<String> indexedGraphs = ConcurrentHashMap.newKeySet();
+    private final List<Runnable> invalidationListeners = new CopyOnWriteArrayList<>();
 
     public Ingestor(GraphService graphs, @Value("${github.token:}") String githubToken) {
         this(graphs, new AwsIamService(), githubToken);
@@ -66,6 +76,41 @@ public class Ingestor {
         this.graphs = graphs;
         this.awsIamService = awsIamService != null ? awsIamService : new AwsIamService();
         this.githubToken = githubToken != null ? githubToken : "";
+    }
+
+    public void addInvalidationListener(Runnable listener) {
+        if (listener != null) {
+            invalidationListeners.add(listener);
+        }
+    }
+
+    private void notifyInvalidation() {
+        for (Runnable r : invalidationListeners) {
+            try {
+                r.run();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    public void ensureIndexes(String graph) {
+        if (!indexedGraphs.add(graph)) {
+            return;
+        }
+        for (String label : LABELS) {
+            try {
+                graphs.write(graph, "CREATE INDEX FOR (n:" + label + ") ON (n.id)", Map.of());
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    @Override
+    public void afterPropertiesSet() {
+        try {
+            ensureIndexes(graphs.main());
+        } catch (Exception ignored) {
+        }
     }
 
     public SourceSet lastSources() {
@@ -102,11 +147,50 @@ public class Ingestor {
         try {
             String url = "https://api.github.com/repos/" + owner + "/" + repo + "/contents/.github/workflows";
             JsonNode listing = json.readTree(get(url, String.class));
+            record DownloadTarget(String name, String downloadUrl) {}
+            List<DownloadTarget> targets = new ArrayList<>();
             for (JsonNode f : listing) {
                 String name = f.path("name").asText();
                 String downloadUrl = f.path("download_url").asText("");
                 if ((name.endsWith(".yml") || name.endsWith(".yaml")) && !downloadUrl.isBlank()) {
-                    files.add(new WorkflowFile(owner + "/" + repo, ".github/workflows/" + name, get(downloadUrl, String.class)));
+                    targets.add(new DownloadTarget(name, downloadUrl));
+                }
+            }
+
+            if (!targets.isEmpty()) {
+                ExecutorService pool = Executors.newFixedThreadPool(Math.min(targets.size(), 5));
+                try {
+                    List<Future<WorkflowFile>> futures = new ArrayList<>();
+                    for (DownloadTarget t : targets) {
+                        futures.add(pool.submit(() -> {
+                            String content = get(t.downloadUrl(), String.class);
+                            return new WorkflowFile(owner + "/" + repo, ".github/workflows/" + t.name(), content);
+                        }));
+                    }
+                    for (Future<WorkflowFile> fut : futures) {
+                        try {
+                            files.add(fut.get());
+                        } catch (ExecutionException ee) {
+                            Throwable cause = ee.getCause();
+                            if (cause instanceof RuntimeException re) {
+                                throw re;
+                            }
+                            if (cause instanceof Error err) {
+                                throw err;
+                            }
+                            throw new RuntimeException(cause);
+                        }
+                    }
+                } finally {
+                    pool.shutdown();
+                    try {
+                        if (!pool.awaitTermination(30, TimeUnit.SECONDS)) {
+                            pool.shutdownNow();
+                        }
+                    } catch (InterruptedException ie) {
+                        pool.shutdownNow();
+                        Thread.currentThread().interrupt();
+                    }
                 }
             }
         } catch (HttpClientErrorException e) {
@@ -134,6 +218,7 @@ public class Ingestor {
     public synchronized void loadMain(SourceSet src) {
         lastSources = src;
         ingest(graphs.main(), src, true);
+        notifyInvalidation();
     }
 
     public synchronized void loadIam(String iamJson) {
@@ -150,16 +235,11 @@ public class Ingestor {
     }
 
     private void ingest(String graph, SourceSet src, boolean reset) {
+        ensureIndexes(graph);
         if (reset) {
             graphs.write(graph, "MATCH (n) WHERE NOT 'Decision' IN labels(n) AND NOT 'Finding' IN labels(n) DETACH DELETE n", Map.of());
             lastWarnings.clear();
             lastPrunedPaths = 0;
-        }
-        for (String label : LABELS) {
-            try {
-                graphs.write(graph, "CREATE INDEX FOR (n:" + label + ") ON (n.id)", Map.of());
-            } catch (Exception ignored) {
-            }
         }
 
         Map<String, ParsedRole> importedRoles = ingestIam(graph, src.iamJson());
@@ -168,6 +248,9 @@ public class Ingestor {
         }
         if (reset) {
             relinkMemory(graph);
+        }
+        if (graph.equals(graphs.main())) {
+            notifyInvalidation();
         }
     }
 

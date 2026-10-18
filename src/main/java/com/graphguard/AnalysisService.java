@@ -26,11 +26,12 @@ import java.util.stream.Collectors;
 
 @Service
 public class AnalysisService {
-    private static final Set<String> EDGE_TYPES = Set.of("HAS_WORKFLOW", "FIRES", "RUNS_JOB", "RUNS_IN", "CAN_READ", "ASSUMES",
-            "CAN_ASSUME", "CAN_PASS_ROLE", "CAN_UPDATE_CODE", "EXECUTES_AS", "CAN_ACCESS", "CALLS_WORKFLOW");
-    private static final String EDGE_TYPES_JOINED = String.join("|", EDGE_TYPES);
-    private static final String PATH_QUERY = """
-            MATCH p = (t:Trigger {untrusted: true})-[*1..8]->(r)
+    public static final Set<String> EDGE_TYPES = Set.of("HAS_WORKFLOW", "FIRES", "RUNS_JOB", "RUNS_IN", "CAN_READ", "ASSUMES",
+            "CAN_ASSUME", "CAN_PASS_ROLE", "CAN_UPDATE_CODE", "EXECUTES_AS", "CAN_ACCESS", "CALLS_WORKFLOW",
+            "TRIGGERS", "STEPS", "USES_ACTION", "USES_SECRET", "ALLOWS");
+    public static final String EDGE_TYPES_JOINED = String.join("|", EDGE_TYPES);
+    public static final String PATH_QUERY = """
+            MATCH p = (t:Trigger {untrusted: true})-[:HAS_WORKFLOW|FIRES|RUNS_JOB|RUNS_IN|CAN_READ|ASSUMES|CAN_ASSUME|CAN_PASS_ROLE|CAN_UPDATE_CODE|EXECUTES_AS|CAN_ACCESS|CALLS_WORKFLOW|TRIGGERS|STEPS|USES_ACTION|USES_SECRET|ALLOWS*1..8]->(r)
             WHERE r.sensitive = true
             RETURN [n IN nodes(p) | n.id] AS ids,
                    [n IN nodes(p) | n.name] AS names,
@@ -41,6 +42,7 @@ public class AnalysisService {
     private final GraphService graphs;
     private final Ingestor ingestor;
     private final DetectionEngine detectionEngine;
+    private final java.util.concurrent.atomic.AtomicReference<List<AttackPath>> mainPathCache = new java.util.concurrent.atomic.AtomicReference<>(null);
 
     public AnalysisService(GraphService graphs, Ingestor ingestor) {
         this(graphs, ingestor, new DetectionEngine(new AwsIamService()));
@@ -50,6 +52,27 @@ public class AnalysisService {
         this.graphs = graphs;
         this.ingestor = ingestor;
         this.detectionEngine = detectionEngine != null ? detectionEngine : new DetectionEngine(new AwsIamService());
+        if (ingestor != null) {
+            ingestor.addInvalidationListener(this::invalidatePathCache);
+        }
+        if (graphs != null) {
+            try {
+                graphs.onWrite(g -> {
+                    if (g != null && g.equals(graphs.main())) {
+                        invalidatePathCache();
+                    }
+                });
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    public void invalidatePathCache() {
+        mainPathCache.set(null);
+    }
+
+    public boolean isPathCachePopulated() {
+        return mainPathCache.get() != null;
     }
 
     public record ResolvedNode(String id, String name, String label, boolean found, String message, List<String> candidates) {}
@@ -111,34 +134,50 @@ public class AnalysisService {
     }
 
     public List<AttackPath> findPaths(String graph, String minSeverity, String entryFilter, boolean sortBySeverity) {
-        Map<String, String> accepted = activeDecisions(graph);
-        Map<String, AttackPath> unique = new LinkedHashMap<>();
-        for (Map<String, Object> row : graphs.read(graph, PATH_QUERY, Map.of())) {
-            List<String> ids = strings(row.get("ids"));
-            List<String> names = strings(row.get("names"));
-            List<String> labels = strings(row.get("labels"));
-            List<String> types = strings(row.get("types"));
-            String key = key(ids, types);
-            if (unique.containsKey(key)) {
-                continue;
-            }
-            List<String> explanation = new ArrayList<>();
-            for (int i = 0; i < types.size(); i++) {
-                explanation.add(sentence(types.get(i), names.get(i), names.get(i + 1)));
-            }
-            AttackPath raw = new AttackPath(key, types.size(), ids, names, labels, types, explanation,
-                    accepted.containsKey(key), accepted.getOrDefault(key, ""));
-            AttackPath scored = detectionEngine.evaluatePathRisk(raw);
-            unique.put(key, scored);
+        boolean isMain = graph != null && graphs != null && graph.equals(graphs.main());
+        List<AttackPath> list = null;
+        if (isMain) {
+            list = mainPathCache.get();
         }
 
-        List<AttackPath> list = new ArrayList<>(unique.values());
-        if (minSeverity != null || entryFilter != null || sortBySeverity) {
-            return detectionEngine.scoreAndFilterPaths(list, minSeverity, entryFilter);
+        if (list == null) {
+            Map<String, String> accepted = activeDecisions(graph);
+            Map<String, AttackPath> unique = new LinkedHashMap<>();
+            for (Map<String, Object> row : graphs.read(graph, PATH_QUERY, Map.of())) {
+                List<String> ids = strings(row.get("ids"));
+                List<String> names = strings(row.get("names"));
+                List<String> labels = strings(row.get("labels"));
+                List<String> types = strings(row.get("types"));
+                String key = key(ids, types);
+                if (unique.containsKey(key)) {
+                    continue;
+                }
+                List<String> explanation = new ArrayList<>();
+                for (int i = 0; i < types.size(); i++) {
+                    explanation.add(sentence(types.get(i), names.get(i), names.get(i + 1)));
+                }
+                AttackPath raw = new AttackPath(key, types.size(), ids, names, labels, types, explanation,
+                        accepted.containsKey(key), accepted.getOrDefault(key, ""));
+                AttackPath scored = detectionEngine.evaluatePathRisk(raw);
+                unique.put(key, scored);
+            }
+
+            List<AttackPath> computed = new ArrayList<>(unique.values());
+            if (isMain) {
+                mainPathCache.set(List.copyOf(computed));
+                list = computed;
+            } else {
+                list = computed;
+            }
         }
-        return list.stream()
+
+        List<AttackPath> copy = new ArrayList<>(list);
+        if (minSeverity != null || entryFilter != null || sortBySeverity) {
+            return new ArrayList<>(detectionEngine.scoreAndFilterPaths(copy, minSeverity, entryFilter));
+        }
+        return new ArrayList<>(copy.stream()
                 .sorted(Comparator.comparingInt(AttackPath::length).thenComparing(AttackPath::key))
-                .toList();
+                .toList());
     }
 
     public List<com.graphguard.Models.RuleFinding> findings(String graph) {
@@ -432,6 +471,9 @@ public class AnalysisService {
         graphs.write(graph,
                 "MATCH (f:Finding {id:$id}), (n {id:$nid}) MERGE (f)-[:ABOUT]->(n)",
                 Map.of("id", id, "nid", res.id()));
+        if (graph != null && graphs != null && graph.equals(graphs.main())) {
+            invalidatePathCache();
+        }
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("outcome", "memory");
@@ -520,6 +562,9 @@ public class AnalysisService {
                 Map.of("id", pathKey, "name", "accepted risk " + pathKey, "owner", owner, "reason", reason, "exp", expires, "at", at, "targets", path.nodeIds()));
         for (String nodeId : path.nodeIds()) {
             graphs.write(graph, "MATCH (d:Decision {id:$d}), (n {id:$n}) MERGE (d)-[:APPLIES_TO]->(n)", Map.of("d", pathKey, "n", nodeId));
+        }
+        if (graph != null && graphs != null && graph.equals(graphs.main())) {
+            invalidatePathCache();
         }
     }
 

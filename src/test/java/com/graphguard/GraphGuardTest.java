@@ -285,4 +285,82 @@ public class GraphGuardTest {
             assertTrue(((Number) recalled.get("rows")).intValue() >= 1);
         }
     }
+
+    @Test
+    @Order(13)
+    public void test13PathCacheServedFromCacheAndIdentical() {
+        analysis.invalidatePathCache();
+        assertFalse(analysis.isPathCachePopulated(), "Cache should be empty initially");
+
+        List<AttackPath> uncached = analysis.findPaths(graphs.main());
+        assertTrue(analysis.isPathCachePopulated(), "Cache should be populated after first findPaths on main");
+
+        List<AttackPath> cached = analysis.findPaths(graphs.main());
+        assertEquals(uncached.size(), cached.size(), "Cached paths count should match uncached");
+        for (int i = 0; i < uncached.size(); i++) {
+            assertEquals(uncached.get(i).key(), cached.get(i).key());
+            assertEquals(uncached.get(i).length(), cached.get(i).length());
+            assertEquals(uncached.get(i).riskScore(), cached.get(i).riskScore());
+            assertEquals(uncached.get(i).severity(), cached.get(i).severity());
+        }
+
+        // Verify sim graphs never populate or touch main cache
+        analysis.invalidatePathCache();
+        analysis.findPaths("sim_test123");
+        assertFalse(analysis.isPathCachePopulated(), "Cache should never be populated for sim_ graphs");
+    }
+
+    @Test
+    @Order(14)
+    public void test14PathCacheClearedAfterIngestAndLoadIam() {
+        analysis.findPaths(graphs.main());
+        assertTrue(analysis.isPathCachePopulated(), "Cache should be populated");
+
+        ingestor.loadMain(ingestor.sampleSources());
+        assertFalse(analysis.isPathCachePopulated(), "Cache should be cleared after loadMain");
+
+        analysis.findPaths(graphs.main());
+        assertTrue(analysis.isPathCachePopulated(), "Cache should be re-populated");
+
+        ingestor.loadIam(ingestor.sampleSources().iamJson());
+        assertFalse(analysis.isPathCachePopulated(), "Cache should be cleared after loadIam");
+    }
+
+    @Test
+    @Order(15)
+    public void test15PathCacheClearedAfterAcceptRisk() {
+        List<AttackPath> paths = analysis.findPaths(graphs.main());
+        assertTrue(analysis.isPathCachePopulated(), "Cache should be populated");
+        String key = paths.get(0).key();
+
+        analysis.acceptRisk(graphs.main(), key, "qa-team", "accepted risk for test", 30);
+        assertFalse(analysis.isPathCachePopulated(), "Cache should be cleared after acceptRisk");
+    }
+
+    @Test
+    @Order(16)
+    public void test16DefensiveCopyPreventsCacheMutation() {
+        List<AttackPath> p1 = analysis.findPaths(graphs.main());
+        int originalSize = p1.size();
+        assertTrue(originalSize > 0);
+
+        // Caller modifies the returned list
+        p1.clear();
+        assertEquals(0, p1.size());
+
+        // Cache must remain untouched
+        List<AttackPath> p2 = analysis.findPaths(graphs.main());
+        assertEquals(originalSize, p2.size(), "Cached list must not be affected by caller mutating returned copy");
+    }
+
+    @Test
+    @Order(17)
+    public void test17PathQueryContainsEdgeTypeWhitelistAndDepth8() {
+        assertTrue(AnalysisService.PATH_QUERY.contains("*1..8"));
+        assertTrue(AnalysisService.PATH_QUERY.contains("FIRES"));
+        assertTrue(AnalysisService.PATH_QUERY.contains("ASSUMES"));
+        assertTrue(AnalysisService.PATH_QUERY.contains("CAN_READ"));
+        assertEquals(AnalysisService.EDGE_TYPES, GraphService.EDGE_TYPES);
+        assertEquals(AnalysisService.PATH_QUERY, GraphService.PATH_QUERY);
+    }
 }

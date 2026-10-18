@@ -22,31 +22,86 @@ const $ = id => document.getElementById(id);
 let cy;
 let paths = [];
 
+let inFlightGets = new Map();
+let activeCalls = 0;
+let spinnerEl = null;
+
+function ensureSpinner() {
+  if (!spinnerEl && document.body) {
+    spinnerEl = document.createElement('div');
+    spinnerEl.id = 'gg-loading-indicator';
+    spinnerEl.style.cssText = 'position:fixed;top:12px;right:20px;z-index:9999;display:none;align-items:center;gap:8px;padding:6px 14px;background:rgba(15,23,42,0.92);border:1px solid #38bdf8;border-radius:20px;color:#38bdf8;font-family:JetBrains Mono,monospace;font-size:12px;box-shadow:0 0 15px rgba(56,189,248,0.4);pointer-events:none;';
+    spinnerEl.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="animation:gg-spin 0.8s linear infinite;"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><span>Loading\u2026</span>';
+    const style = document.createElement('style');
+    style.textContent = '@keyframes gg-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }';
+    document.head.appendChild(style);
+    document.body.appendChild(spinnerEl);
+  }
+}
+
+function showLoading() {
+  activeCalls++;
+  ensureSpinner();
+  if (spinnerEl) spinnerEl.style.display = 'inline-flex';
+}
+
+function hideLoading() {
+  activeCalls = Math.max(0, activeCalls - 1);
+  if (activeCalls === 0 && spinnerEl) {
+    spinnerEl.style.display = 'none';
+  }
+}
+
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
 function esc(s) {
+  if (s == null) return '';
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 async function api(url, opts) {
-  const res = await fetch(url, opts);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
-  return data;
+  const method = (opts && opts.method) ? opts.method.toUpperCase() : 'GET';
+  const isGet = method === 'GET';
+  if (isGet && inFlightGets.has(url)) {
+    return inFlightGets.get(url);
+  }
+
+  showLoading();
+  const promise = (async () => {
+    try {
+      const res = await fetch(url, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    } finally {
+      if (isGet) inFlightGets.delete(url);
+      hideLoading();
+    }
+  })();
+
+  if (isGet) {
+    inFlightGets.set(url, promise);
+  }
+  return promise;
 }
 
 function post(url, body) {
   return api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 }
 
+let isActionBusy = false;
 function guard(fn) {
   return async (...args) => {
+    if (isActionBusy) return;
+    isActionBusy = true;
     try {
       await fn(...args);
     } catch (e) {
       $('detail').innerHTML = '<p class="bad">' + esc(e.message) + '</p>';
+    } finally {
+      isActionBusy = false;
     }
   };
 }
@@ -147,18 +202,21 @@ function initGraph() {
 }
 
 async function loadGraph() {
-  const g = await api('/api/graph');
+  const [g, p] = await Promise.all([
+    api('/api/graph'),
+    api('/api/paths').catch(() => [])
+  ]);
+  paths = p || [];
   const els = [];
-  g.nodes.forEach(n => els.push({ data: { id: n.id, label: n.name, kind: n.label, sensitive: n.sensitive === true } }));
-  g.edges.forEach(e => els.push({ data: { id: e.source + '|' + e.type + '|' + e.target, source: e.source, target: e.target, label: e.type } }));
+  (g.nodes || []).forEach(n => els.push({ data: { id: n.id, label: n.name, kind: n.label, sensitive: n.sensitive === true } }));
+  (g.edges || []).forEach(e => els.push({ data: { id: e.source + '|' + e.type + '|' + e.target, source: e.source, target: e.target, label: e.type } }));
   cy.elements().remove();
   cy.add(els);
   cy.layout({ name: 'breadthfirst', directed: true, spacingFactor: 1.15, padding: 25 }).run();
-  if ($('sNodes')) $('sNodes').textContent = g.nodes.length;
-  if ($('sEdges')) $('sEdges').textContent = g.edges.length;
-  const p = await api('/api/paths').catch(() => []);
-  if ($('sPaths')) $('sPaths').textContent = p.length;
-  if ($('sAcc')) $('sAcc').textContent = p.filter(x => x.accepted).length;
+  if ($('sNodes')) $('sNodes').textContent = (g.nodes || []).length;
+  if ($('sEdges')) $('sEdges').textContent = (g.edges || []).length;
+  if ($('sPaths')) $('sPaths').textContent = paths.length;
+  if ($('sAcc')) $('sAcc').textContent = paths.filter(x => x.accepted).length;
 }
 
 function highlight(idLists) {
@@ -181,8 +239,10 @@ function pathCard(p, i) {
     <button class="mini" data-act="show" data-i="${i}">Highlight</button> <button class="mini" data-act="accept" data-key="${esc(p.key)}">Accept risk</button></header><ol>${hops}</ol></article>`;
 }
 
-async function showPaths() {
-  paths = await api('/api/paths');
+async function showPaths(fromCache = false) {
+  if (!fromCache || !paths || !paths.length) {
+    paths = await api('/api/paths');
+  }
   highlight(paths.filter(p => !p.accepted).map(p => p.nodeIds));
   $('sim').innerHTML = '';
   $('detail').innerHTML = `<h2>${paths.length} attack path(s) from an untrusted trigger to a sensitive target</h2>` +
@@ -195,7 +255,7 @@ async function showPaths() {
 
 async function showChoke() {
   const c = await api('/api/choke-points');
-  const rows = c.edges.map(e => `<tr><td>${esc(e.description)}</td><td class="bad">removes ${e.paths} of ${c.activePaths}</td>
+  const rows = (c.edges || []).map(e => `<tr><td>${esc(e.description)}</td><td class="bad">removes ${esc(e.paths)} of ${esc(c.activePaths)}</td>
     <td><button class="mini" data-act="sim" data-s="${esc(e.source)}" data-t="${esc(e.type)}" data-d="${esc(e.target)}">Simulate</button></td></tr>`).join('');
   $('detail').innerHTML = `<h2>Fix-first ranking (links on the most attack paths)</h2>` +
     (rows ? `<table><tr><th>Link</th><th>Impact</th><th></th></tr>${rows}</table>` : '<p class="good">No active attack paths.</p>');
@@ -221,15 +281,15 @@ async function blast(id, depth) {
   cy.elements().removeClass('hot blast dim');
   (r.nodes || []).forEach(n => cy.getElementById(n.id).addClass('blast'));
   if (cy.getElementById(id)) cy.getElementById(id).addClass('blast');
-  const groups = Object.entries(r.byLabel || {}).map(([k, v]) => `${v} ${esc(k)}`).join(', ') || 'nothing';
+  const groups = Object.entries(r.byLabel || {}).map(([k, v]) => `${esc(v)} ${esc(k)}`).join(', ') || 'nothing';
   const sens = (r.sensitiveReached && r.sensitiveReached.length) ? `<p class="bad">Sensitive targets reached: ${r.sensitiveReached.map(esc).join(', ')}</p>` : '<p class="good">No sensitive target reachable.</p>';
   const nodeRows = (r.nodes || []).map(n => {
     const via = Array.isArray(n.via) ? n.via : [];
     const viaHtml = via.length > 1 ? `<div class="via-path">${via.map(esc).map(v => `<span>${v}</span>`).join('')}</div>` : '';
     const hops = n.hops != null ? n.hops : '?';
-    return `<li class="${n.sensitive ? 'sensitive' : ''}">${esc(n.name)} <em>(${esc(n.label)}, ${hops} hop${hops === 1 ? '' : 's'})</em>${viaHtml}</li>`;
+    return `<li class="${n.sensitive ? 'sensitive' : ''}">${esc(n.name)} <em>(${esc(n.label)}, ${esc(hops)} hop${hops === 1 ? '' : 's'})</em>${viaHtml}</li>`;
   }).join('');
-  $('detail').innerHTML = `<h2>${badge(r.outcome)} Blast radius of ${esc((cy.getElementById(id) && cy.getElementById(id).data('label')) || id)} (depth ${depth})</h2><p>If compromised it can reach ${r.reachableCount} node(s): ${groups}.</p>${sens}<ul class="node-list">${nodeRows}</ul>`;
+  $('detail').innerHTML = `<h2>${badge(r.outcome)} Blast radius of ${esc((cy.getElementById(id) && cy.getElementById(id).data('label')) || id)} (depth ${esc(depth)})</h2><p>If compromised it can reach ${esc(r.reachableCount)} node(s): ${groups}.</p>${sens}<ul class="node-list">${nodeRows}</ul>`;
   return r;
 }
 // =====================================================================
@@ -332,7 +392,7 @@ async function depthContrast() {
     const via = Array.isArray(n.via) ? n.via : [];
     const viaHtml = via.length > 1 ? `<div class="via-path">${via.map(esc).map(v => `<span>${v}</span>`).join('')}</div>` : '';
     const hops = n.hops != null ? n.hops : '?';
-    return `<li class="${markNew ? 'new' : ''} ${n.sensitive ? 'sensitive' : ''}">${esc(n.name)} <em>(${esc(n.label)}, ${hops} hop${hops === 1 ? '' : 's'})</em>${viaHtml}</li>`;
+    return `<li class="${markNew ? 'new' : ''} ${n.sensitive ? 'sensitive' : ''}">${esc(n.name)} <em>(${esc(n.label)}, ${esc(hops)} hop${hops === 1 ? '' : 's'})</em>${viaHtml}</li>`;
   }).join('');
   cy.elements().removeClass('hot blast dim');
   if (newAt4.length) {
@@ -341,10 +401,10 @@ async function depthContrast() {
   }
   $('depth-panel').innerHTML = `
     <h2>Depth contrast: "${esc(id)}"</h2>
-    <p>At depth&nbsp;1: <b>${r1.reachableCount}</b> node(s) reachable &nbsp;|&nbsp; At depth&nbsp;4: <b>${r4.reachableCount}</b> node(s) reachable &nbsp;|&nbsp; <b class="${newAt4.length ? 'bad' : 'good'}">${newAt4.length} discovered only through graph traversal</b></p>
+    <p>At depth&nbsp;1: <b>${esc(r1.reachableCount)}</b> node(s) reachable &nbsp;|&nbsp; At depth&nbsp;4: <b>${esc(r4.reachableCount)}</b> node(s) reachable &nbsp;|&nbsp; <b class="${newAt4.length ? 'bad' : 'good'}">${esc(newAt4.length)} discovered only through graph traversal</b></p>
     <div class="depth-row">
-      <div class="depth-col"><h3>Depth 1 &mdash; <b>${r1.reachableCount}</b> nodes</h3><ul class="node-list">${makeList(r1.nodes || [], false)}</ul></div>
-      <div class="depth-col"><h3>Depth 4 &mdash; <b>${r4.reachableCount}</b> nodes &nbsp;<span style="color:var(--ok)">(+${newAt4.length} new)</span></h3><ul class="node-list">${makeList(r4.nodes || [], false)}${makeList(newAt4, true)}</ul></div>
+      <div class="depth-col"><h3>Depth 1 &mdash; <b>${esc(r1.reachableCount)}</b> nodes</h3><ul class="node-list">${makeList(r1.nodes || [], false)}</ul></div>
+      <div class="depth-col"><h3>Depth 4 &mdash; <b>${esc(r4.reachableCount)}</b> nodes &nbsp;<span style="color:var(--ok)">(+${esc(newAt4.length)} new)</span></h3><ul class="node-list">${makeList(r4.nodes || [], false)}${makeList(newAt4, true)}</ul></div>
     </div>`;
 }
 
@@ -371,7 +431,8 @@ async function accept(key) {
   if (!modalRes || !modalRes.owner) return;
   const days = parseInt(modalRes.days, 10) || 30;
   await post('/api/decisions', { pathKey: key, owner: modalRes.owner, reason: modalRes.reason, days });
-  await showPaths();
+  await loadGraph();
+  await showPaths(true);
 }
 
 async function ask() {
@@ -404,7 +465,7 @@ $('detail').addEventListener('click', guard(async ev => {
   if (d.act === 'accept') await accept(d.key);
 }));
 
-$('btnSample').onclick = guard(async () => { await post('/api/ingest/sample'); await loadGraph(); await showPaths(); });
+$('btnSample').onclick = guard(async () => { await post('/api/ingest/sample'); await loadGraph(); await showPaths(true); });
 $('btnGithub').onclick = guard(async () => {
   const modalRes = await showModal({
     title: 'Scan GitHub Repository',
@@ -431,7 +492,7 @@ $('btnGithub').onclick = guard(async () => {
   const repo = parts[1];
   await post('/api/ingest/github', { owner, repo });
   await loadGraph();
-  await showPaths();
+  await showPaths(true);
 });
 $('btnPaths').onclick = guard(showPaths);
 $('btnChoke').onclick = guard(showChoke);
